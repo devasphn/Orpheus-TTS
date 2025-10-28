@@ -35,17 +35,14 @@ def initialize_model():
     try:
         logger.info("Starting model initialization...")
         from orpheus_tts import OrpheusModel
-        
+
         # Get model configuration from environment variables
         model_name = os.getenv("MODEL_NAME", "canopylabs/orpheus-tts-0.1-finetune-prod")
-        max_model_len = int(os.getenv("MAX_MODEL_LEN", "2048"))
-        
+
         logger.info(f"Loading model: {model_name}")
-        logger.info(f"Max model length: {max_model_len}")
-        
+
         engine = OrpheusModel(
-            model_name=model_name,
-            max_model_len=max_model_len
+            model_name=model_name
         )
         
         model_loaded = True
