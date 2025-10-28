@@ -1,0 +1,22 @@
+# Orpheus TTS RunPod Deployment Requirements
+# Python >= 3.10 required
+
+# Core dependencies
+torch>=2.0.0
+transformers>=4.30.0
+orpheus-speech==0.1.0
+
+# vLLM - specific version to avoid bugs (installed separately in Dockerfile)
+# vllm==0.7.3
+
+# Web server
+flask>=2.3.0
+gunicorn>=21.2.0
+
+# Audio processing (included with orpheus-speech via snac)
+# snac
+
+# Utilities
+requests>=2.31.0
+numpy>=1.24.0
+
