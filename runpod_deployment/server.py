@@ -38,11 +38,19 @@ def initialize_model():
 
         # Get model configuration from environment variables
         model_name = os.getenv("MODEL_NAME", "canopylabs/orpheus-tts-0.1-finetune-prod")
+        max_model_len = int(os.getenv("MAX_MODEL_LEN", "2048"))
+        gpu_memory_utilization = float(os.getenv("GPU_MEMORY_UTILIZATION", "0.9"))
 
         logger.info(f"Loading model: {model_name}")
+        logger.info(f"Max model length: {max_model_len}")
+        logger.info(f"GPU memory utilization: {gpu_memory_utilization}")
 
+        # Pass vLLM engine parameters via **kwargs
+        # These get forwarded to AsyncEngineArgs in OrpheusModel._setup_engine()
         engine = OrpheusModel(
-            model_name=model_name
+            model_name=model_name,
+            max_model_len=max_model_len,
+            gpu_memory_utilization=gpu_memory_utilization
         )
         
         model_loaded = True
