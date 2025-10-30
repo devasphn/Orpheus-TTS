@@ -381,17 +381,19 @@ def chat():
         logger.info(f"Chat request: {user_message[:50]}... (voice: {voice})")
         start_time = time.time()
 
-        # Build conversation prompt for Gemma 2
-        conversation = ""
+        # Build conversation prompt for Gemma 2 using correct chat template
+        # Gemma 2 format: <bos><start_of_turn>user\n{content}<end_of_turn>\n<start_of_turn>model\n{response}<end_of_turn>\n
+        conversation = "<bos>"
         for msg in history:
             role = msg.get('role', 'user')
             content = msg.get('content', '')
-            if role == 'user':
-                conversation += f"User: {content}\n"
-            elif role == 'assistant':
-                conversation += f"Assistant: {content}\n"
+            # Gemma 2 uses 'model' instead of 'assistant'
+            if role == 'assistant':
+                role = 'model'
+            conversation += f"<start_of_turn>{role}\n{content.strip()}<end_of_turn>\n"
 
-        conversation += f"User: {user_message}\nAssistant:"
+        # Add current user message and prompt for model response
+        conversation += f"<start_of_turn>user\n{user_message.strip()}<end_of_turn>\n<start_of_turn>model\n"
 
         if stream_text:
             # Stream text only (for debugging/testing)
@@ -402,7 +404,7 @@ def chat():
                     temperature=0.7,
                     top_p=0.9,
                     max_tokens=512,
-                    stop=["User:", "\n\n"]
+                    stop=["<end_of_turn>", "<start_of_turn>"]  # Gemma 2 stop tokens
                 )
 
                 request_id = f"chat-{int(time.time()*1000)}"
@@ -451,123 +453,177 @@ def chat():
                         temperature=0.7,
                         top_p=0.9,
                         max_tokens=512,
-                        stop=["User:", "\n\n"]
+                        stop=["<end_of_turn>", "<start_of_turn>"]  # Gemma 2 stop tokens
                     )
 
                     request_id = f"chat-{int(time.time()*1000)}"
 
-                    # ===== STEP 1: Generate complete LLM response =====
-                    # We must complete LLM generation BEFORE starting TTS to avoid
-                    # vLLM engine conflicts (both use AsyncLLMEngine with shared CUDA context)
+                    # ===== STEP 1: Stream LLM response word-by-word =====
+                    # We stream LLM tokens and buffer them into phrases for TTS
+                    # This reduces time-to-first-audio from 13-16s to ~2-3s
                     #
                     # FIX: Run LLM in separate thread with asyncio.run() to avoid event loop conflicts
                     # This is similar to how OrpheusModel.generate_tokens_sync() works
 
-                    logger.info("Step 1: Generating LLM response...")
+                    logger.info("Step 1: Streaming LLM response word-by-word...")
                     llm_start = time.time()
 
-                    # Queue to pass result from thread to main thread
-                    result_queue = queue_module.Queue()
+                    # Queue to pass LLM tokens from thread to main thread
+                    token_queue = queue_module.Queue()
 
                     def run_llm_in_thread():
-                        """Run LLM generation in separate thread with its own event loop"""
-                        async def get_llm_response():
-                            """Generate complete text response from LLM"""
+                        """Run LLM generation in separate thread, streaming tokens"""
+                        async def stream_llm_tokens():
+                            """Stream LLM tokens as they're generated"""
                             results_generator = llm_engine.generate(
                                 conversation,
                                 sampling_params,
                                 request_id
                             )
 
-                            full_text = ""
                             async for request_output in results_generator:
-                                full_text = request_output.outputs[0].text
+                                # Put each token update in the queue
+                                token_queue.put(('token', request_output.outputs[0].text))
 
-                            return full_text
+                            # Signal completion
+                            token_queue.put(('done', None))
 
                         try:
                             # Use asyncio.run() to create a clean event loop for this request
-                            llm_response = asyncio.run(get_llm_response())
-                            result_queue.put(('success', llm_response))
+                            asyncio.run(stream_llm_tokens())
                         except Exception as e:
-                            result_queue.put(('error', str(e)))
+                            token_queue.put(('error', str(e)))
 
                     # Start LLM generation in background thread
                     llm_thread = Thread(target=run_llm_in_thread, daemon=True)
                     llm_thread.start()
-                    llm_thread.join(timeout=30.0)  # Wait up to 30 seconds
 
-                    # Get result from queue
-                    if result_queue.empty():
-                        raise TimeoutError("LLM generation timed out after 30 seconds")
+                    # ===== STEP 2: Buffer words and stream to TTS =====
+                    # Buffer LLM tokens into phrases, then send to TTS for low-latency streaming
 
-                    status, result = result_queue.get()
-                    if status == 'error':
-                        raise Exception(f"LLM generation failed: {result}")
-
-                    llm_response = result
-                    llm_elapsed = time.time() - llm_start
-                    logger.info(f"LLM response generated in {llm_elapsed:.2f}s: {llm_response[:100]}...")
-
-                    # ===== STEP 2: Split into sentences =====
-                    sentences = split_into_sentences(llm_response)
-                    logger.info(f"Split into {len(sentences)} sentences")
-
-                    # ===== STEP 3: Process each sentence through TTS =====
-                    # Now safe to use TTS engine since LLM is complete
-                    #
-                    # NOTE: Orpheus TTS does NOT require emotion tags like <|emotion:happy|>
-                    # It works with plain text and infers emotion from the text itself
-                    # (punctuation, word choice, etc.). The LLM output is already in the
-                    # correct format for Orpheus TTS.
-
-                    logger.info("Step 2: Generating TTS audio...")
+                    logger.info("Step 2: Buffering words and streaming to TTS...")
                     tts_start = time.time()
                     chunk_count = 0
-                    sentence_times = []
+                    phrase_times = []
 
-                    for i, sentence in enumerate(sentences):
-                        if not sentence.strip():
-                            continue
+                    word_buffer = []
+                    previous_text = ""
+                    llm_complete = False
+                    llm_response = ""
 
-                        sentence_start = time.time()
-                        logger.info(f"TTS sentence {i+1}/{len(sentences)}: {sentence[:50]}...")
+                    while not llm_complete:
+                        try:
+                            # Get next token from queue (with timeout)
+                            status, data = token_queue.get(timeout=30.0)
 
-                        # Generate speech for this sentence
-                        syn_tokens = tts_engine.generate_speech(
-                            prompt=sentence,
-                            voice=voice,
-                            repetition_penalty=1.1,
-                            stop_token_ids=[128258],
-                            max_tokens=1000,
-                            temperature=0.4,
-                            top_p=0.9
-                        )
+                            if status == 'error':
+                                raise Exception(f"LLM generation failed: {data}")
+                            elif status == 'done':
+                                llm_complete = True
+                                llm_elapsed = time.time() - llm_start
+                                logger.info(f"LLM response complete in {llm_elapsed:.2f}s: {llm_response[:100]}...")
 
-                        sentence_chunks = 0
-                        for chunk in syn_tokens:
-                            chunk_count += 1
-                            sentence_chunks += 1
-                            yield chunk
+                                # Process any remaining buffered words
+                                if word_buffer:
+                                    phrase = " ".join(word_buffer)
+                                    logger.info(f"TTS final phrase: {phrase[:50]}...")
+                                    phrase_start = time.time()
 
-                        sentence_elapsed = time.time() - sentence_start
-                        sentence_times.append(sentence_elapsed)
-                        logger.info(f"  → Sentence {i+1} complete: {sentence_chunks} chunks in {sentence_elapsed:.2f}s")
+                                    syn_tokens = tts_engine.generate_speech(
+                                        prompt=phrase,
+                                        voice=voice,
+                                        repetition_penalty=1.1,
+                                        stop_token_ids=[128258],
+                                        max_tokens=1000,
+                                        temperature=0.4,
+                                        top_p=0.9
+                                    )
 
+                                    phrase_chunks = 0
+                                    for audio_chunk in syn_tokens:
+                                        chunk_count += 1
+                                        phrase_chunks += 1
+                                        yield audio_chunk
+
+                                    phrase_elapsed = time.time() - phrase_start
+                                    phrase_times.append(phrase_elapsed)
+                                    logger.info(f"  → Final phrase complete: {phrase_chunks} chunks in {phrase_elapsed:.2f}s")
+
+                            elif status == 'token':
+                                # Get new words from the incremental text
+                                current_text = data
+                                llm_response = current_text  # Track full response
+                                new_text = current_text[len(previous_text):]
+                                previous_text = current_text
+
+                                if new_text.strip():
+                                    # Split new text into words
+                                    new_words = new_text.split()
+                                    word_buffer.extend(new_words)
+
+                                    # Check if we should flush the buffer
+                                    # Flush on: 10+ words, or sentence-ending punctuation
+                                    should_flush = False
+                                    if len(word_buffer) >= 10:
+                                        should_flush = True
+                                    elif word_buffer and any(word_buffer[-1].endswith(p) for p in ['.', '!', '?', ',']):
+                                        should_flush = True
+
+                                    if should_flush:
+                                        phrase = " ".join(word_buffer)
+                                        logger.info(f"TTS phrase ({len(word_buffer)} words): {phrase[:50]}...")
+                                        phrase_start = time.time()
+
+                                        # Generate TTS for this phrase
+                                        syn_tokens = tts_engine.generate_speech(
+                                            prompt=phrase,
+                                            voice=voice,
+                                            repetition_penalty=1.1,
+                                            stop_token_ids=[128258],
+                                            max_tokens=1000,
+                                            temperature=0.4,
+                                            top_p=0.9
+                                        )
+
+                                        phrase_chunks = 0
+                                        for audio_chunk in syn_tokens:
+                                            chunk_count += 1
+                                            phrase_chunks += 1
+                                            yield audio_chunk
+
+                                        phrase_elapsed = time.time() - phrase_start
+                                        phrase_times.append(phrase_elapsed)
+                                        logger.info(f"  → Phrase complete: {phrase_chunks} chunks in {phrase_elapsed:.2f}s")
+
+                                        # Clear buffer
+                                        word_buffer = []
+
+                        except queue_module.Empty:
+                            raise TimeoutError("LLM generation timed out after 30 seconds")
+
+                    # ===== STEP 3: Calculate and log performance metrics =====
                     tts_elapsed = time.time() - tts_start
                     total_elapsed = time.time() - start_time
 
                     # Calculate performance metrics
-                    avg_sentence_time = sum(sentence_times) / len(sentence_times) if sentence_times else 0
+                    avg_phrase_time = sum(phrase_times) / len(phrase_times) if phrase_times else 0
                     estimated_tokens = chunk_count * 7  # Approximate: each chunk ~ 7 tokens
                     tts_throughput = estimated_tokens / tts_elapsed if tts_elapsed > 0 else 0
+                    time_to_first_audio = phrase_times[0] if phrase_times else 0
 
                     logger.info(f"Chat complete:")
                     logger.info(f"  - LLM: {llm_elapsed:.2f}s")
                     logger.info(f"  - TTS: {tts_elapsed:.2f}s ({chunk_count} chunks, ~{estimated_tokens} tokens)")
                     logger.info(f"  - TTS throughput: {tts_throughput:.1f} tokens/s")
-                    logger.info(f"  - Avg time per sentence: {avg_sentence_time:.2f}s")
+                    logger.info(f"  - Phrases processed: {len(phrase_times)}")
+                    logger.info(f"  - Avg time per phrase: {avg_phrase_time:.2f}s")
+                    logger.info(f"  - Time to first audio: {time_to_first_audio:.2f}s")
                     logger.info(f"  - Total: {total_elapsed:.2f}s")
+
+                    # NOTE: Orpheus TTS does NOT require emotion tags like <laugh>, <happy>, etc.
+                    # It works with plain text and infers emotion from the text itself
+                    # (punctuation, word choice, context). The LLM output is already in the
+                    # correct format for Orpheus TTS.
 
                 except Exception as e:
                     logger.error(f"Error during conversational audio generation: {e}", exc_info=True)
