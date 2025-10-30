@@ -14,10 +14,14 @@ model = model.to(snac_device)
 
 
 def convert_to_audio(multiframe, count):
+  import time  # For profiling
+
   frames = []
   if len(multiframe) < 7:
     return
-  
+
+  prep_start = time.time()
+
   codes_0 = torch.tensor([], device=snac_device, dtype=torch.int32)
   codes_1 = torch.tensor([], device=snac_device, dtype=torch.int32)
   codes_2 = torch.tensor([], device=snac_device, dtype=torch.int32)
@@ -33,13 +37,13 @@ def convert_to_audio(multiframe, count):
       codes_0 = torch.cat([codes_0, torch.tensor([frame[i]], device=snac_device, dtype=torch.int32)])
 
     if codes_1.shape[0] == 0:
-      
+
       codes_1 = torch.tensor([frame[i+1]], device=snac_device, dtype=torch.int32)
       codes_1 = torch.cat([codes_1, torch.tensor([frame[i+4]], device=snac_device, dtype=torch.int32)])
     else:
       codes_1 = torch.cat([codes_1, torch.tensor([frame[i+1]], device=snac_device, dtype=torch.int32)])
       codes_1 = torch.cat([codes_1, torch.tensor([frame[i+4]], device=snac_device, dtype=torch.int32)])
-    
+
     if codes_2.shape[0] == 0:
       codes_2 = torch.tensor([frame[i+2]], device=snac_device, dtype=torch.int32)
       codes_2 = torch.cat([codes_2, torch.tensor([frame[i+3]], device=snac_device, dtype=torch.int32)])
@@ -56,14 +60,32 @@ def convert_to_audio(multiframe, count):
   if torch.any(codes[0] < 0) or torch.any(codes[0] > 4096) or torch.any(codes[1] < 0) or torch.any(codes[1] > 4096) or torch.any(codes[2] < 0) or torch.any(codes[2] > 4096):
     return
 
+  prep_time = time.time() - prep_start
+  decode_start = time.time()
+
   with torch.inference_mode():
     audio_hat = model.decode(codes)
-  
+
+  # Synchronize to get accurate timing
+  if snac_device == 'cuda':
+    torch.cuda.synchronize()
+
+  decode_time = time.time() - decode_start
+  post_start = time.time()
+
   audio_slice = audio_hat[:, :, 2048:4096]
   detached_audio = audio_slice.detach().cpu()
   audio_np = detached_audio.numpy()
   audio_int16 = (audio_np * 32767).astype(np.int16)
   audio_bytes = audio_int16.tobytes()
+
+  post_time = time.time() - post_start
+  total_time = prep_time + decode_time + post_time
+
+  # Log timing every 10 chunks to avoid spam
+  if count % 70 == 0:  # Every 10 chunks (70 tokens)
+    print(f"[SNAC Profile] Chunk {count//7}: prep={prep_time*1000:.1f}ms, decode={decode_time*1000:.1f}ms, post={post_time*1000:.1f}ms, total={total_time*1000:.1f}ms")
+
   return audio_bytes
 
 def turn_token_into_id(token_string, index):
