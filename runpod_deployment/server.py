@@ -211,8 +211,14 @@ def index():
     try:
         # Get the directory where server.py is located
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        html_path = os.path.join(current_dir, 'web_ui.html')
 
+        # Try to serve the new conversational AI UI first
+        html_v2_path = os.path.join(current_dir, 'web_ui_v2.html')
+        if os.path.exists(html_v2_path):
+            return send_file(html_v2_path)
+
+        # Fallback to old TTS-only UI
+        html_path = os.path.join(current_dir, 'web_ui.html')
         if os.path.exists(html_path):
             return send_file(html_path)
         else:

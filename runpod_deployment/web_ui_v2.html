@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Orpheus Conversational AI - Voice Assistant</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 1400px;
+            width: 100%;
+            margin: 0 auto;
+            padding: 40px;
+        }
+
+        h1 {
+            color: #667eea;
+            text-align: center;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 1.1em;
+        }
+
+        .status-bar {
+            background: #f0f0f0;
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #ccc;
+        }
+
+        .status-dot.healthy {
+            background: #4CAF50;
+            box-shadow: 0 0 10px rgba(76, 175, 80, 0.5);
+        }
+
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 30px;
+            border-bottom: 2px solid #e0e0e0;
+        }
+
+        .tab {
+            padding: 15px 30px;
+            background: transparent;
+            border: none;
+            border-bottom: 3px solid transparent;
+            cursor: pointer;
+            font-size: 1.1em;
+            font-weight: 600;
+            color: #666;
+            transition: all 0.3s;
+        }
+
+        .tab:hover {
+            color: #667eea;
+        }
+
+        .tab.active {
+            color: #667eea;
+            border-bottom-color: #667eea;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .chat-container {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 20px;
+        }
+
+        .chat-history {
+            background: #f8f9fa;
+            border-radius: 15px;
+            padding: 20px;
+            min-height: 400px;
+            max-height: 500px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .message {
+            padding: 15px;
+            border-radius: 15px;
+            max-width: 80%;
+            word-wrap: break-word;
+        }
+
+        .message.user {
+            background: #667eea;
+            color: white;
+            align-self: flex-end;
+            margin-left: auto;
+        }
+
+        .message.assistant {
+            background: #e0e0e0;
+            color: #333;
+            align-self: flex-start;
+        }
+
+        .message.system {
+            background: #fff3cd;
+            color: #856404;
+            align-self: center;
+            text-align: center;
+            font-size: 0.9em;
+            max-width: 100%;
+        }
+
+        .input-area {
+            display: flex;
+            gap: 15px;
+            align-items: flex-end;
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            flex: 1;
+        }
+
+        label {
+            font-weight: 600;
+            color: #333;
+            font-size: 1.1em;
+        }
+
+        select, textarea, input {
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            font-size: 1em;
+            font-family: inherit;
+            transition: border-color 0.3s;
+        }
+
+        select:focus, textarea:focus, input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 100px;
+            line-height: 1.6;
+        }
+
+        button {
+            padding: 15px 30px;
+            border: none;
+            border-radius: 10px;
+            font-size: 1.1em;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .btn-secondary {
+            background: #f0f0f0;
+            color: #333;
+        }
+
+        .btn-secondary:hover {
+            background: #e0e0e0;
+        }
+
+        .audio-player {
+            width: 100%;
+            margin-top: 10px;
+            border-radius: 10px;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            color: #667eea;
+            padding: 20px;
+        }
+
+        .loading.active {
+            display: block;
+        }
+
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .error-message, .success-message {
+            padding: 15px;
+            border-radius: 10px;
+            margin-top: 20px;
+            display: none;
+        }
+
+        .error-message {
+            background: #ffebee;
+            color: #c62828;
+        }
+
+        .success-message {
+            background: #e8f5e9;
+            color: #2e7d32;
+        }
+
+        .error-message.active, .success-message.active {
+            display: block;
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 20px;
+            }
+
+            h1 {
+                font-size: 2em;
+            }
+
+            .tabs {
+                overflow-x: auto;
+            }
+
+            .message {
+                max-width: 90%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎙️ Orpheus Conversational AI</h1>
+        <p class="subtitle">Voice Assistant with Gemma 2 2B + Orpheus TTS</p>
+
+        <!-- Status Bar -->
+        <div class="status-bar">
+            <div class="status-indicator">
+                <div class="status-dot" id="statusDot"></div>
+                <span id="statusText">Checking server status...</span>
+            </div>
+            <div class="status-indicator">
+                <span id="modelStatus">Models: Loading...</span>
+            </div>
+        </div>
+
+        <!-- Tabs -->
+        <div class="tabs">
+            <button class="tab active" onclick="switchTab('chat')">💬 Conversational AI</button>
+            <button class="tab" onclick="switchTab('tts')">🔊 Text-to-Speech</button>
+        </div>
+
+        <!-- Chat Tab -->
+        <div id="chatTab" class="tab-content active">
+            <div class="chat-container">
+                <div class="chat-history" id="chatHistory">
+                    <div class="message system">Start a conversation! Ask me anything.</div>
+                </div>
+
+                <div class="input-area">
+                    <div class="form-group" style="flex: 3;">
+                        <label for="chatMessage">Your Message</label>
+                        <textarea id="chatMessage" placeholder="Type your message here..."></textarea>
+                    </div>
+
+                    <div class="form-group" style="flex: 1;">
+                        <label for="chatVoice">Voice</label>
+                        <select id="chatVoice">
+                            <option value="tara">Tara (Default)</option>
+                            <option value="zoe">Zoe</option>
+                            <option value="zac">Zac</option>
+                            <option value="jess">Jess</option>
+                            <option value="leo">Leo</option>
+                            <option value="mia">Mia</option>
+                            <option value="julia">Julia</option>
+                            <option value="leah">Leah</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="controls">
+                    <button class="btn-primary" onclick="sendMessage()" id="sendBtn">Send Message</button>
+                    <button class="btn-secondary" onclick="clearChat()">Clear Chat</button>
+                </div>
+
+                <div class="loading" id="chatLoading">
+                    <div class="spinner"></div>
+                    <p>Generating response...</p>
+                </div>
+
+                <div class="error-message" id="chatError"></div>
+            </div>
+        </div>
+
+        <!-- TTS Tab -->
+        <div id="ttsTab" class="tab-content">
+            <!-- TTS content will be added here -->
+        </div>
+    </div>
+
+    <script>
+        let conversationHistory = [];
+        let currentAudio = null;
+
+        // Check server status
+        async function checkStatus() {
+            try {
+                const response = await fetch('/health');
+                const data = await response.json();
+                
+                const statusDot = document.getElementById('statusDot');
+                const statusText = document.getElementById('statusText');
+                const modelStatus = document.getElementById('modelStatus');
+                
+                if (data.status === 'healthy') {
+                    statusDot.classList.add('healthy');
+                    statusText.textContent = 'Server: Online';
+                    
+                    const ttsStatus = data.models?.tts ? '✅' : '❌';
+                    const llmStatus = data.models?.llm ? '✅' : '❌';
+                    modelStatus.textContent = `TTS: ${ttsStatus} | LLM: ${llmStatus}`;
+                } else {
+                    statusText.textContent = 'Server: Error';
+                    modelStatus.textContent = 'Models: Not loaded';
+                }
+            } catch (error) {
+                document.getElementById('statusText').textContent = 'Server: Offline';
+                document.getElementById('modelStatus').textContent = 'Models: Unavailable';
+            }
+        }
+
+        // Switch tabs
+        function switchTab(tabName) {
+            document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+            
+            event.target.classList.add('active');
+            document.getElementById(tabName + 'Tab').classList.add('active');
+        }
+
+        // Send message
+        async function sendMessage() {
+            const messageInput = document.getElementById('chatMessage');
+            const voice = document.getElementById('chatVoice').value;
+            const message = messageInput.value.trim();
+            
+            if (!message) {
+                showError('Please enter a message');
+                return;
+            }
+            
+            // Add user message to chat
+            addMessage('user', message);
+            messageInput.value = '';
+            
+            // Show loading
+            document.getElementById('chatLoading').classList.add('active');
+            document.getElementById('sendBtn').disabled = true;
+            
+            try {
+                const response = await fetch('/chat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        message: message,
+                        voice: voice,
+                        history: conversationHistory
+                    })
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Failed to get response');
+                }
+                
+                // Get audio blob
+                const audioBlob = await response.blob();
+                const audioUrl = URL.createObjectURL(audioBlob);
+                
+                // Add assistant message with audio
+                addMessage('assistant', 'Response generated', audioUrl);
+                
+                // Update conversation history
+                conversationHistory.push({role: 'user', content: message});
+                conversationHistory.push({role: 'assistant', content: 'Response'});
+                
+            } catch (error) {
+                showError('Error: ' + error.message);
+            } finally {
+                document.getElementById('chatLoading').classList.remove('active');
+                document.getElementById('sendBtn').disabled = false;
+            }
+        }
+
+        // Add message to chat
+        function addMessage(role, text, audioUrl = null) {
+            const chatHistory = document.getElementById('chatHistory');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${role}`;
+            messageDiv.textContent = text;
+            
+            if (audioUrl) {
+                const audio = document.createElement('audio');
+                audio.controls = true;
+                audio.className = 'audio-player';
+                audio.src = audioUrl;
+                audio.autoplay = true;
+                messageDiv.appendChild(document.createElement('br'));
+                messageDiv.appendChild(audio);
+                currentAudio = audio;
+            }
+            
+            chatHistory.appendChild(messageDiv);
+            chatHistory.scrollTop = chatHistory.scrollHeight;
+        }
+
+        // Clear chat
+        function clearChat() {
+            conversationHistory = [];
+            document.getElementById('chatHistory').innerHTML = '<div class="message system">Chat cleared. Start a new conversation!</div>';
+            if (currentAudio) {
+                currentAudio.pause();
+                currentAudio = null;
+            }
+        }
+
+        // Show error
+        function showError(message) {
+            const errorDiv = document.getElementById('chatError');
+            errorDiv.textContent = message;
+            errorDiv.classList.add('active');
+            setTimeout(() => errorDiv.classList.remove('active'), 5000);
+        }
+
+        // Enter key to send
+        document.getElementById('chatMessage').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+
+        // Check status on load and periodically
+        checkStatus();
+        setInterval(checkStatus, 10000);
+    </script>
+</body>
+</html>
+
