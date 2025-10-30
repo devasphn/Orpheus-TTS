@@ -436,9 +436,9 @@ def chat():
 
         else:
             # Stream audio response (LLM → TTS pipeline)
+            # IMPORTANT: Sequential execution to avoid vLLM engine conflicts
             def generate_conversational_audio():
                 from vllm import SamplingParams
-                import queue
 
                 try:
                     # Send WAV header first
@@ -454,97 +454,77 @@ def chat():
 
                     request_id = f"chat-{int(time.time()*1000)}"
 
-                    # Buffer for accumulating text
-                    text_buffer = ""
-                    sentence_queue = queue.Queue()
-                    tts_complete = False
+                    # ===== STEP 1: Generate complete LLM response =====
+                    # We must complete LLM generation BEFORE starting TTS to avoid
+                    # vLLM engine conflicts (both use AsyncLLMEngine with shared CUDA context)
 
-                    def llm_generator():
-                        """Generate text from LLM and split into sentences"""
-                        nonlocal text_buffer, tts_complete
+                    logger.info("Step 1: Generating LLM response...")
+                    llm_start = time.time()
 
-                        async def stream_llm():
-                            results_generator = llm_engine.generate(
-                                conversation,
-                                sampling_params,
-                                request_id
-                            )
+                    async def get_llm_response():
+                        """Generate complete text response from LLM"""
+                        results_generator = llm_engine.generate(
+                            conversation,
+                            sampling_params,
+                            request_id
+                        )
 
-                            full_text = ""
-                            async for request_output in results_generator:
-                                new_text = request_output.outputs[0].text
-                                delta = new_text[len(full_text):]
-                                full_text = new_text
+                        full_text = ""
+                        async for request_output in results_generator:
+                            full_text = request_output.outputs[0].text
 
-                                if delta:
-                                    yield delta
+                        return full_text
 
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
+                    # Run LLM generation to completion
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
 
-                        try:
-                            gen = stream_llm()
-                            while True:
-                                try:
-                                    delta = loop.run_until_complete(gen.__anext__())
-                                    text_buffer += delta
+                    try:
+                        llm_response = loop.run_until_complete(get_llm_response())
+                    finally:
+                        loop.close()
 
-                                    # Check for sentence boundaries
-                                    sentences = split_into_sentences(text_buffer)
-                                    if len(sentences) > 1:
-                                        # We have complete sentences
-                                        for sentence in sentences[:-1]:
-                                            sentence_queue.put(sentence)
-                                            logger.info(f"Queued sentence: {sentence[:50]}...")
-                                        text_buffer = sentences[-1]
+                    llm_elapsed = time.time() - llm_start
+                    logger.info(f"LLM response generated in {llm_elapsed:.2f}s: {llm_response[:100]}...")
 
-                                except StopAsyncIteration:
-                                    break
+                    # ===== STEP 2: Split into sentences =====
+                    sentences = split_into_sentences(llm_response)
+                    logger.info(f"Split into {len(sentences)} sentences")
 
-                            # Add any remaining text as final sentence
-                            if text_buffer.strip():
-                                sentence_queue.put(text_buffer.strip())
-                                logger.info(f"Queued final sentence: {text_buffer[:50]}...")
-
-                            tts_complete = True
-
-                        finally:
-                            loop.close()
-
-                    # Start LLM generation in background thread
-                    llm_thread = Thread(target=llm_generator, daemon=True)
-                    llm_thread.start()
-
-                    # Process sentences through TTS as they arrive
+                    # ===== STEP 3: Process each sentence through TTS =====
+                    # Now safe to use TTS engine since LLM is complete
+                    logger.info("Step 2: Generating TTS audio...")
+                    tts_start = time.time()
                     chunk_count = 0
-                    while not tts_complete or not sentence_queue.empty():
-                        try:
-                            sentence = sentence_queue.get(timeout=0.1)
 
-                            logger.info(f"Generating TTS for: {sentence[:50]}...")
-
-                            # Generate speech for this sentence
-                            syn_tokens = tts_engine.generate_speech(
-                                prompt=sentence,
-                                voice=voice,
-                                repetition_penalty=1.1,
-                                stop_token_ids=[128258],
-                                max_tokens=1000,
-                                temperature=0.4,
-                                top_p=0.9
-                            )
-
-                            for chunk in syn_tokens:
-                                chunk_count += 1
-                                yield chunk
-
-                        except queue.Empty:
+                    for i, sentence in enumerate(sentences):
+                        if not sentence.strip():
                             continue
 
-                    llm_thread.join(timeout=1.0)
+                        logger.info(f"TTS sentence {i+1}/{len(sentences)}: {sentence[:50]}...")
 
-                    elapsed = time.time() - start_time
-                    logger.info(f"Chat complete: {chunk_count} audio chunks in {elapsed:.2f}s")
+                        # Generate speech for this sentence
+                        syn_tokens = tts_engine.generate_speech(
+                            prompt=sentence,
+                            voice=voice,
+                            repetition_penalty=1.1,
+                            stop_token_ids=[128258],
+                            max_tokens=1000,
+                            temperature=0.4,
+                            top_p=0.9
+                        )
+
+                        for chunk in syn_tokens:
+                            chunk_count += 1
+                            yield chunk
+
+                    tts_elapsed = time.time() - tts_start
+                    total_elapsed = time.time() - start_time
+
+                    logger.info(f"Chat complete:")
+                    logger.info(f"  - LLM: {llm_elapsed:.2f}s")
+                    logger.info(f"  - TTS: {tts_elapsed:.2f}s ({chunk_count} chunks)")
+                    logger.info(f"  - Total: {total_elapsed:.2f}s")
 
                 except Exception as e:
                     logger.error(f"Error during conversational audio generation: {e}", exc_info=True)
