@@ -281,12 +281,12 @@ User Input
 # LLM Configuration
 export LLM_MODEL_NAME="google/gemma-2-2b-it"
 export LLM_MAX_MODEL_LEN="2048"
-export LLM_GPU_MEMORY_UTILIZATION="0.25"  # 25% of GPU VRAM
+export LLM_GPU_MEMORY_UTILIZATION="0.28"  # 28% of GPU VRAM (~5.5GB)
 
 # TTS Configuration
 export TTS_MODEL_NAME="canopylabs/orpheus-tts-0.1-finetune-prod"
 export TTS_MAX_MODEL_LEN="2048"
-export TTS_GPU_MEMORY_UTILIZATION="0.35"  # 35% of GPU VRAM
+export TTS_GPU_MEMORY_UTILIZATION="0.33"  # 33% of GPU VRAM (~6.5GB)
 
 # Server Configuration
 export PORT="8080"
@@ -296,19 +296,20 @@ export SNAC_DEVICE="cuda"
 ### **GPU Memory Allocation**
 
 ```
-RTX A4500: 20GB VRAM
+RTX A4500: 20GB VRAM (19.67GB usable)
 
 Allocation:
-├─ TTS (35%):     ~7GB   (Orpheus TTS 3B)
-├─ LLM (25%):     ~5GB   (Gemma 2 2B)
-├─ Total:         60%    (~12GB)
-└─ Headroom:      40%    (~8GB for SNAC, KV cache, overhead)
+├─ TTS (33%):     ~6.5GB  (6.18GB weights + 0.3GB KV cache)
+├─ LLM (28%):     ~5.5GB  (4.90GB weights + 0.6GB KV cache)
+├─ Total:         61%     (~12GB)
+└─ Headroom:      39%     (~7.7GB for SNAC, overhead, safety margin)
 ```
 
 **Why this allocation?**
-- TTS needs more memory (larger model + long audio sequences)
-- LLM is smaller and faster (2B vs 3B)
-- 40% headroom prevents OOM errors
+- Both models share GPU memory - allocations are cumulative
+- TTS needs slightly more (larger model: 6.18GB vs 4.90GB)
+- Each model needs room for KV cache (minimum 0.3-0.6GB)
+- 39% headroom prevents OOM errors
 - SNAC decoder needs GPU compute during generation
 
 ---

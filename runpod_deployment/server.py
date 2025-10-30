@@ -52,11 +52,30 @@ def initialize_models():
         llm_max_model_len = int(os.getenv("LLM_MAX_MODEL_LEN", "2048"))
 
         # GPU memory allocation strategy
-        # Total VRAM: 20GB (RTX A4500)
-        # TTS: ~6GB, LLM: ~4GB, SNAC: ~1GB, Headroom: ~9GB
-        tts_gpu_memory = float(os.getenv("TTS_GPU_MEMORY_UTILIZATION", "0.35"))  # 35% = ~7GB
-        llm_gpu_memory = float(os.getenv("LLM_GPU_MEMORY_UTILIZATION", "0.25"))  # 25% = ~5GB
-        # Total: 60% GPU memory, 40% headroom for SNAC and overhead
+        # Total VRAM: 20GB (RTX A4500) = 19.67GB usable
+        #
+        # CRITICAL ISSUE: vLLM models share GPU memory but each calculates allocation independently
+        # When TTS loads first with 35%, it takes 6.89GB
+        # When LLM tries to load with 25%, it calculates 4.92GB from TOTAL (not remaining)
+        # But only ~12.78GB remains, so 4.92GB leaves NO room for KV cache!
+        #
+        # SOLUTION: Reduce TTS allocation to leave more room for LLM
+        #
+        # Memory breakdown (from logs):
+        # - Orpheus TTS: 6.18GB weights (needs ~0.5GB KV cache minimum)
+        # - Gemma 2 2B: 4.90GB weights (needs ~0.5GB KV cache minimum)
+        # - SNAC decoder: ~1GB (shared compute)
+        # - PyTorch overhead: ~0.5GB
+        # - Total minimum: ~13.6GB
+        #
+        # Strategy: Conservative allocations with room for KV caches
+        tts_gpu_memory = float(os.getenv("TTS_GPU_MEMORY_UTILIZATION", "0.33"))  # 33% = 6.49GB (6.18GB weights + 0.31GB KV)
+        llm_gpu_memory = float(os.getenv("LLM_GPU_MEMORY_UTILIZATION", "0.28"))  # 28% = 5.51GB (4.90GB weights + 0.61GB KV)
+        #
+        # Expected usage:
+        # - TTS: 6.49GB
+        # - LLM: 5.51GB
+        # - Total: 12.00GB, leaving 7.67GB for SNAC, overhead, and safety margin ✅
 
         logger.info("="*70)
         logger.info("LOADING ORPHEUS TTS MODEL")
